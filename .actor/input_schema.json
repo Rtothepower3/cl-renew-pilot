@@ -1,0 +1,64 @@
+{
+  "title": "Craigslist Renew Pilot",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "mode": {
+      "title": "Action mode",
+      "type": "string",
+      "enum": ["renew", "repost", "dry-run"],
+      "default": "dry-run",
+      "description": "Use 'renew' in production. 'repost' for your dummy listings. 'dry-run' clicks nothing."
+    },
+    "listing_filter": {
+      "title": "Listing filter",
+      "type": "object",
+      "description": "Restrict which rows to touch. Leave empty for all.",
+      "properties": {
+        "status_in": {
+          "title": "Allowed status values",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["expired", "redone", "removed", "deleted"]
+        },
+        "title_includes": {
+          "title": "Title must include",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "max_actions": {
+          "title": "Max actions per run",
+          "type": "integer",
+          "default": 5
+        }
+      }
+    },
+    "screenshots": {
+      "title": "Screenshots",
+      "type": "string",
+      "enum": ["none", "summary", "per-action"],
+      "default": "summary",
+      "description": "Save summary page only or each row before/after."
+    },
+    "delays": {
+      "title": "Human-like delays (ms)",
+      "type": "object",
+      "properties": {
+        "min": { "type": "integer", "default": 300 },
+        "max": { "type": "integer", "default": 1200 }
+      }
+    },
+    "timeout_sec": {
+      "title": "Run timeout (seconds)",
+      "type": "integer",
+      "default": 180
+    },
+    "headless": {
+      "title": "Run headless",
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": ["mode"]
+}
