@@ -51,8 +51,16 @@
       "description": "Randomized sleep range to mimic human pacing between actions.",
       "editor": "json",
       "properties": {
-        "min": { "type": "integer", "default": 300 },
-        "max": { "type": "integer", "default": 1200 }
+        "min": {
+          "title": "Minimum delay (ms)",
+          "type": "integer",
+          "default": 300
+        },
+        "max": {
+          "title": "Maximum delay (ms)",
+          "type": "integer",
+          "default": 1200
+        }
       }
     },
     "timeout_sec": {
