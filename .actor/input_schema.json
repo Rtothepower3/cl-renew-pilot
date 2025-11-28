@@ -19,7 +19,8 @@
           "title": "Allowed status values",
           "type": "array",
           "items": { "type": "string" },
-          "default": ["expired", "redone", "removed", "deleted"]
+          "default": ["expired", "redone", "removed", "deleted"],
+          "description": "Only act on rows whose status matches one of these values."
         },
         "title_includes": {
           "title": "Title must include",

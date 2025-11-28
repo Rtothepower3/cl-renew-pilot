@@ -1,107 +1,140 @@
-"""Module defines the main entry point for the Apify Actor.
+"""Phase 1 Craigslist renew pilot Actor.
 
-Feel free to modify this file to suit your specific needs.
-
-To build Apify Actors, utilize the Apify SDK toolkit, read more at the official documentation:
-https://docs.apify.com/sdk/python
+Logs into Craigslist, navigates to the manage postings page, prints the visible
+posting rows, saves debug artifacts, and stores a summary in the key-value store.
 """
 
 from __future__ import annotations
 
-from urllib.parse import urljoin
+import os
+from typing import List
 
-from apify import Actor, Request
-from playwright.async_api import async_playwright
+from apify import Actor
+from playwright.async_api import (
+    BrowserContext,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    async_playwright,
+)
 
-# Note: To run this Actor locally, ensure that Playwright browsers are installed.
-# Run `playwright install --with-deps` in the Actor's virtual environment to install them.
-# When running on the Apify platform, these dependencies are already included
-# in the Actor's Docker image.
+LOGIN_URL = 'https://accounts.craigslist.org/login/home'
+
+
+async def login_craigslist(page: Page, email: str, password: str) -> None:
+    """Log in to Craigslist using provided credentials."""
+    await page.goto(LOGIN_URL, wait_until='domcontentloaded')
+    await page.wait_for_selector('#inputEmailHandle', timeout=15000)
+    await page.fill('#inputEmailHandle', email)
+    await page.fill('#inputPassword', password)
+
+    login_button = page.locator('button[type="submit"], input[type="submit"]')
+    if await login_button.count():
+        await login_button.first.click()
+    else:
+        await page.press('#inputPassword', 'Enter')
+
+    await page.wait_for_load_state('networkidle')
+    try:
+        await page.wait_for_selector(
+            'a[href*="logout"], a[href*="logoff"], form[action*="logout"]',
+            timeout=10000,
+        )
+    except PlaywrightTimeoutError as exc:
+        raise RuntimeError('Login confirmation failed; logout control not found.') from exc
+
+
+async def load_postings(page: Page) -> None:
+    """Ensure we land on the manage postings page and wait for rows to render."""
+    if not page.url.startswith(LOGIN_URL):
+        await page.goto(LOGIN_URL, wait_until='networkidle')
+
+    table_selector = 'table.account-table, table[data-event*="manage"], table'
+    await page.wait_for_selector(table_selector, timeout=15000)
+
+
+async def extract_postings(page: Page) -> List[str]:
+    """Extract visible posting rows as simple text lines."""
+    rows_locator = page.locator('table.account-table tr, table tr')
+    count = await rows_locator.count()
+
+    postings: List[str] = []
+    for idx in range(count):
+        row = rows_locator.nth(idx)
+
+        if not await row.is_visible():
+            continue
+
+        if await row.locator('th').count():
+            # Skip header rows.
+            continue
+
+        text = (await row.inner_text()).strip()
+        if not text:
+            continue
+
+        cleaned = ' '.join(text.split())
+        postings.append(cleaned)
+
+    return postings
+
+
+async def save_debug(context: BrowserContext) -> None:
+    """Save a screenshot and HTML snapshot to the key-value store."""
+    if not context.pages:
+        return
+
+    page = context.pages[-1]
+    try:
+        screenshot = await page.screenshot(full_page=True)
+        html_content = await page.content()
+    except Exception as exc:  # noqa: BLE001
+        Actor.log.warning(f'Unable to capture debug artifacts: {exc}')
+        return
+
+    await Actor.set_value('login.png', screenshot, content_type='image/png')
+    await Actor.set_value('page.html', html_content, content_type='text/html')
 
 
 async def main() -> None:
-    """Define a main entry point for the Apify Actor.
-
-    This coroutine is executed using `asyncio.run()`, so it must remain an asynchronous function for proper execution.
-    Asynchronous execution is required for communication with Apify platform, and it also enhances performance in
-    the field of web scraping significantly.
-    """
-    # Enter the context of the Actor.
     async with Actor:
-        # Retrieve the Actor input, and use default values if not provided.
-        actor_input = await Actor.get_input() or {}
-        start_urls = actor_input.get('start_urls', [{'url': 'https://apify.com'}])
-        max_depth = actor_input.get('max_depth', 1)
+        email = os.getenv('CL_EMAIL')
+        password = os.getenv('CL_PASSWORD')
 
-        # Exit if no start URLs are provided.
-        if not start_urls:
-            Actor.log.info('No start URLs specified in Actor input, exiting...')
-            await Actor.exit()
+        summary = {'status': 'error', 'postings_found': 0}
 
-        # Open the default request queue for handling URLs to be processed.
-        request_queue = await Actor.open_request_queue()
-
-        # Enqueue the start URLs with an initial crawl depth of 0.
-        for start_url in start_urls:
-            url = start_url.get('url')
-            Actor.log.info(f'Enqueuing {url} ...')
-            new_request = Request.from_url(url, user_data={'depth': 0})
-            await request_queue.add_request(new_request)
-
-        Actor.log.info('Launching Playwright...')
-
-        # Launch Playwright and open a new browser context.
-        async with async_playwright() as playwright:
-            # Configure the browser to launch in headless mode as per Actor configuration.
-            browser = await playwright.chromium.launch(
-                headless=Actor.configuration.headless,
-                args=['--disable-gpu'],
+        if not email or not password:
+            message = 'Environment variables CL_EMAIL and CL_PASSWORD must be set.'
+            Actor.log.error(message)
+            await Actor.set_value(
+                'summary.json',
+                {**summary, 'message': message},
             )
+            return
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=Actor.configuration.headless)
             context = await browser.new_context()
+            page = await context.new_page()
 
-            # Process the URLs from the request queue.
-            while request := await request_queue.fetch_next_request():
-                url = request.url
+            postings: List[str] = []
+            try:
+                await login_craigslist(page, email, password)
+                await load_postings(page)
+                postings = await extract_postings(page)
 
-                if not isinstance(request.user_data['depth'], (str, int)):
-                    raise TypeError('Request.depth is an unexpected type.')
+                for idx, posting in enumerate(postings, start=1):
+                    Actor.log.info(f'Posting {idx}: {posting}')
+                    print(f'Posting {idx}: {posting}')
 
-                depth = int(request.user_data['depth'])
-                Actor.log.info(f'Scraping {url} (depth={depth}) ...')
-
-                try:
-                    # Open a new page in the browser context and navigate to the URL.
-                    page = await context.new_page()
-                    await page.goto(url)
-
-                    # If the current depth is less than max_depth, find nested links
-                    # and enqueue them.
-                    if depth < max_depth:
-                        for link in await page.locator('a').all():
-                            link_href = await link.get_attribute('href')
-                            link_url = urljoin(url, link_href)
-
-                            if link_url.startswith(('http://', 'https://')):
-                                Actor.log.info(f'Enqueuing {link_url} ...')
-                                new_request = Request.from_url(
-                                    link_url,
-                                    user_data={'depth': depth + 1},
-                                )
-                                await request_queue.add_request(new_request)
-
-                    # Extract the desired data.
-                    data = {
-                        'url': url,
-                        'title': await page.title(),
-                    }
-
-                    # Store the extracted data to the default dataset.
-                    await Actor.push_data(data)
-
-                except Exception:
-                    Actor.log.exception(f'Cannot extract data from {url}.')
-
-                finally:
-                    await page.close()
-                    # Mark the request as handled to ensure it is not processed again.
-                    await request_queue.mark_request_as_handled(request)
+                summary = {'status': 'ok', 'postings_found': len(postings)}
+            except Exception as exc:  # noqa: BLE001
+                Actor.log.exception('Phase 1 flow failed.')
+                summary = {
+                    **summary,
+                    'message': str(exc),
+                    'postings_found': len(postings),
+                }
+            finally:
+                await save_debug(context)
+                await Actor.set_value('summary.json', summary)
+                await browser.close()
