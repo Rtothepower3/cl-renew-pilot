@@ -54,12 +54,14 @@
         "min": {
           "title": "Minimum delay (ms)",
           "type": "integer",
-          "default": 300
+          "default": 300,
+          "description": "Lower bound of randomized delay between actions (ms)."
         },
         "max": {
           "title": "Maximum delay (ms)",
           "type": "integer",
-          "default": 1200
+          "default": 1200,
+          "description": "Upper bound of randomized delay between actions (ms)."
         }
       }
     },
