@@ -155,3 +155,5 @@ Each row may look like:
 - Store screenshots and generate a clean summary JSON
 - Integrate with Make.com for scheduling and notifications
 - Prepare for expansion into the more complex cafe reservation automation that requires flexible AI driven task selection and browser action handling
+
+test commit
