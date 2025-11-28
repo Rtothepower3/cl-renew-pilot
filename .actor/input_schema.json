@@ -14,6 +14,7 @@
       "title": "Listing filter",
       "type": "object",
       "description": "Restrict which rows to touch. Leave empty for all.",
+      "editor": "json",
       "properties": {
         "status_in": {
           "title": "Allowed status values",
@@ -48,6 +49,7 @@
       "title": "Human-like delays (ms)",
       "type": "object",
       "description": "Randomized sleep range to mimic human pacing between actions.",
+      "editor": "json",
       "properties": {
         "min": { "type": "integer", "default": 300 },
         "max": { "type": "integer", "default": 1200 }
