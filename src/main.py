@@ -103,7 +103,11 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
             timeout=timeout_ms,
         )
     except PlaywrightTimeoutError as exc:
-        raise RuntimeError('Login confirmation failed; logout control not found.') from exc
+        # Save debug artifacts before raising
+        await page.screenshot(path="login_failed.png", full_page=True)
+        await Actor.set_value("login_failed_screenshot.png", await page.screenshot(full_page=True))
+        await Actor.set_value("login_failed_html.html", await page.content())
+        raise RuntimeError("Login confirmation failed. logout control not found.") from exc
 
 
 async def load_postings(page: Page, timeout_ms: int) -> None:
