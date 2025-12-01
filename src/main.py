@@ -11,6 +11,8 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List
 
+import re
+
 from apify import Actor
 from playwright.async_api import (
     BrowserContext,
@@ -63,10 +65,35 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
     await page.fill('#inputEmailHandle', email)
     await page.fill('#inputPassword', password)
 
-    login_button = page.locator('button[type="submit"], input[type="submit"]')
-    if await login_button.count():
-        await login_button.first.click()
-    else:
+    # Prefer clicking the *second* "Log in" control when there are multiple
+    # buttons on the page (the page shows more than one login button in some flows).
+    # Try to find accessible buttons that exactly match "Log in" first, and
+    # prefer the second occurrence when present. Fall back to enabled submit
+    # buttons inside the login form, and finally fall back to pressing Enter.
+    try:
+        login_by_name = page.get_by_role("button", name=re.compile(r"^\s*Log in\s*$", re.IGNORECASE))
+        name_count = await login_by_name.count()
+        if name_count >= 2:
+            await login_by_name.nth(1).click(timeout=timeout_ms)
+        elif name_count == 1:
+            await login_by_name.first.click(timeout=timeout_ms)
+        else:
+            # No role-matched buttons — use submit buttons inside the login form
+            fallback_selector = (
+                'form[action*="login"] button[type="submit"]:not([disabled]), '
+                'form[action*="login"] input[type="submit"]:not([disabled])'
+            )
+            submit_buttons = page.locator(fallback_selector)
+            submit_count = await submit_buttons.count()
+            if submit_count >= 2:
+                await submit_buttons.nth(1).click(timeout=timeout_ms)
+            elif submit_count == 1:
+                await submit_buttons.first.click(timeout=timeout_ms)
+            else:
+                # Last resort — press Enter on the password field
+                await page.press('#inputPassword', 'Enter')
+    except PlaywrightTimeoutError:
+        # If clicks time out, try pressing Enter as a final fallback.
         await page.press('#inputPassword', 'Enter')
 
     await page.wait_for_load_state('networkidle')
