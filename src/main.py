@@ -59,19 +59,14 @@ async def load_input() -> InputConfig:
 
 
 async def login_craigslist(page: Page, email: str, password: str, timeout_ms: int) -> None:
-    """Log in to Craigslist using provided credentials."""
-    # Navigate to the login page and wait for it to load.
+    '''Log in to Craigslist using provided credentials.'''
     await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=timeout_ms)
-    
-    # Fill in the email and password fields.
+
     await page.wait_for_selector('#inputEmailHandle', timeout=timeout_ms)
     await page.fill('#inputEmailHandle', email)
     await page.fill('#inputPassword', password)
 
-    # Submit the login form by clicking the second "Log in" button (if multiple exist),
-    # with fallbacks for different page variations.
     try:
-        # Strategy 1: Find accessible "Log in" buttons and prefer the second one.
         login_by_name = page.get_by_role("button", name=re.compile(r"^\s*Log in\s*$", re.IGNORECASE))
         name_count = await login_by_name.count()
         if name_count >= 2:
@@ -79,7 +74,6 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
         elif name_count == 1:
             await login_by_name.first.click(timeout=timeout_ms)
         else:
-            # Strategy 2: Fall back to enabled submit buttons inside the login form.
             fallback_selector = (
                 'form[action*="login"] button[type="submit"]:not([disabled]), '
                 'form[action*="login"] input[type="submit"]:not([disabled])'
@@ -91,27 +85,53 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
             elif submit_count == 1:
                 await submit_buttons.first.click(timeout=timeout_ms)
             else:
-                # Strategy 3: Last resort — press Enter on the password field.
+                # Last resort: press Enter on the password field to submit.
                 await page.press('#inputPassword', 'Enter')
     except PlaywrightTimeoutError:
-        # If all click attempts time out, press Enter as a final fallback.
         await page.press('#inputPassword', 'Enter')
 
-    # Wait for the page to fully load after login.
+    # Limit login wait to avoid hanging the whole run on challenges or bad creds.
     await page.wait_for_load_state('networkidle')
-    
-    # Confirm successful login by checking for the postings page.
+    login_check_timeout = min(timeout_ms, 60_000)
+
+    confirmation_selector = "h2.account-tab-header:has-text('postings')"
     try:
-        await page.wait_for_selector(
-            await page.wait_for_selector("h2.account-tab-header:has-text('postings')",
-            timeout=timeout_ms)
-        )
+        await page.wait_for_selector(confirmation_selector, timeout=login_check_timeout)
+        return
     except PlaywrightTimeoutError as exc:
-        # If login fails, save debug artifacts for troubleshooting.
-        await page.screenshot(path="login_failed.png", full_page=True)
-        await Actor.set_value("login_failed_screenshot.png", await page.screenshot(full_page=True))
-        await Actor.set_value("login_failed_html.html", await page.content())
-        raise RuntimeError("Login confirmation failed. logout control not found.") from exc
+        async def _is_visible(selector: str) -> bool:
+            try:
+                return await page.locator(selector).first.is_visible(timeout=2_000)
+            except PlaywrightTimeoutError:
+                return False
+
+        current_url = page.url
+        page_title = await page.title()
+        login_form_visible = await _is_visible('#inputEmailHandle')
+        captcha_visible = await _is_visible('iframe[src*="captcha"], .g-recaptcha')
+        error_visible = await _is_visible('.warning, .alertbox, .account-error')
+
+        screenshot = await page.screenshot(full_page=True)
+        html_content = await page.content()
+
+        await Actor.set_value('login_failed_screenshot.png', screenshot, content_type='image/png')
+        await Actor.set_value('login_failed_html.html', html_content, content_type='text/html')
+        await Actor.set_value(
+            'login_failed_meta.json',
+            {
+                'url': current_url,
+                'title': page_title,
+                'login_form_visible': login_form_visible,
+                'captcha_visible': captcha_visible,
+                'error_visible': error_visible,
+            },
+            content_type='application/json',
+        )
+
+        raise RuntimeError(
+            f"Login confirmation failed. url={current_url} login_form_visible={login_form_visible} "
+            f"captcha_visible={captcha_visible} error_visible={error_visible}"
+        ) from exc
 
 
 async def load_postings(page: Page, timeout_ms: int) -> None:
@@ -163,6 +183,11 @@ async def save_debug(context: BrowserContext) -> None:
 
     await Actor.set_value('login.png', screenshot, content_type='image/png')
     await Actor.set_value('page.html', html_content, content_type='text/html')
+    await Actor.set_value(
+        'page_meta.json',
+        {'url': page.url, 'title': await page.title()},
+        content_type='application/json',
+    )
 
 
 async def main() -> None:
