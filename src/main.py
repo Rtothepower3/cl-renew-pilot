@@ -99,8 +99,8 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
     await page.wait_for_load_state('networkidle')
     try:
         await page.wait_for_selector(
-            'a[href*="logout"], a[href*="logoff"], form[action*="logout"]',
-            timeout=timeout_ms,
+            await page.wait_for_selector("h1:has-text('postings')", 
+            timeout=timeout_ms)
         )
     except PlaywrightTimeoutError as exc:
         # Save debug artifacts before raising
