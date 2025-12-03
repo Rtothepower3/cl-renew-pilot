@@ -66,13 +66,22 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
     await page.fill('#inputEmailHandle', email)
     await page.fill('#inputPassword', password)
 
+    Actor.log.info(f"Debug login email={email}, password_length={len(password)}")
+
+    async def _capture_after_click() -> None:
+        """Store artifacts immediately after the login submission attempt."""
+        await Actor.set_value("after_click_html.html", await page.content())
+        await Actor.set_value("after_click_screenshot.png", await page.screenshot(full_page=True))
+
     try:
         login_by_name = page.get_by_role("button", name=re.compile(r"^\s*Log in\s*$", re.IGNORECASE))
         name_count = await login_by_name.count()
         if name_count >= 2:
             await login_by_name.nth(1).click(timeout=timeout_ms)
+            await _capture_after_click()
         elif name_count == 1:
             await login_by_name.first.click(timeout=timeout_ms)
+            await _capture_after_click()
         else:
             fallback_selector = (
                 'form[action*="login"] button[type="submit"]:not([disabled]), '
@@ -82,13 +91,17 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
             submit_count = await submit_buttons.count()
             if submit_count >= 2:
                 await submit_buttons.nth(1).click(timeout=timeout_ms)
+                await _capture_after_click()
             elif submit_count == 1:
                 await submit_buttons.first.click(timeout=timeout_ms)
+                await _capture_after_click()
             else:
                 # Last resort: press Enter on the password field to submit.
                 await page.press('#inputPassword', 'Enter')
+                await _capture_after_click()
     except PlaywrightTimeoutError:
         await page.press('#inputPassword', 'Enter')
+        await _capture_after_click()
 
     # Limit login wait to avoid hanging the whole run on challenges or bad creds.
     await page.wait_for_load_state('networkidle')
@@ -109,6 +122,9 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
         page_title = await page.title()
         login_form_visible = await _is_visible('#inputEmailHandle')
         captcha_visible = await _is_visible('iframe[src*="captcha"], .g-recaptcha')
+        # error_visible checks generic warning/alert boxes (.warning, .alertbox) and account-level errors (.account-error).
+        # This will catch banner-style errors Craigslist sometimes shows after failed login, but will miss inline field hints
+        # or silent reloads with no visible error message if Craigslist uses other selectors for failures.
         error_visible = await _is_visible('.warning, .alertbox, .account-error')
 
         screenshot = await page.screenshot(full_page=True)
