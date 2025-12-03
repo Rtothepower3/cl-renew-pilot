@@ -103,7 +103,7 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
     # Confirm successful login by checking for the postings page.
     try:
         await page.wait_for_selector(
-            await page.wait_for_selector("h1:has-text('postings')", 
+            await page.wait_for_selector("h2.account-tab-header:has-text('postings')",
             timeout=timeout_ms)
         )
     except PlaywrightTimeoutError as exc:
