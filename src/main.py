@@ -209,6 +209,9 @@ async def save_debug(context: BrowserContext) -> None:
 async def main() -> None:
     # Initialize the Actor runtime.
     async with Actor:
+        # Test artefacts can be stored using Actor.set_value and retrieved later.
+        await Actor.set_value("debug_hello.txt", "hello from this run")
+        
         # Load configuration and environment variables.
         config = await load_input()
 
