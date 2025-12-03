@@ -60,17 +60,18 @@ async def load_input() -> InputConfig:
 
 async def login_craigslist(page: Page, email: str, password: str, timeout_ms: int) -> None:
     """Log in to Craigslist using provided credentials."""
+    # Navigate to the login page and wait for it to load.
     await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=timeout_ms)
+    
+    # Fill in the email and password fields.
     await page.wait_for_selector('#inputEmailHandle', timeout=timeout_ms)
     await page.fill('#inputEmailHandle', email)
     await page.fill('#inputPassword', password)
 
-    # Prefer clicking the *second* "Log in" control when there are multiple
-    # buttons on the page (the page shows more than one login button in some flows).
-    # Try to find accessible buttons that exactly match "Log in" first, and
-    # prefer the second occurrence when present. Fall back to enabled submit
-    # buttons inside the login form, and finally fall back to pressing Enter.
+    # Submit the login form by clicking the second "Log in" button (if multiple exist),
+    # with fallbacks for different page variations.
     try:
+        # Strategy 1: Find accessible "Log in" buttons and prefer the second one.
         login_by_name = page.get_by_role("button", name=re.compile(r"^\s*Log in\s*$", re.IGNORECASE))
         name_count = await login_by_name.count()
         if name_count >= 2:
@@ -78,7 +79,7 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
         elif name_count == 1:
             await login_by_name.first.click(timeout=timeout_ms)
         else:
-            # No role-matched buttons — use submit buttons inside the login form
+            # Strategy 2: Fall back to enabled submit buttons inside the login form.
             fallback_selector = (
                 'form[action*="login"] button[type="submit"]:not([disabled]), '
                 'form[action*="login"] input[type="submit"]:not([disabled])'
@@ -90,20 +91,23 @@ async def login_craigslist(page: Page, email: str, password: str, timeout_ms: in
             elif submit_count == 1:
                 await submit_buttons.first.click(timeout=timeout_ms)
             else:
-                # Last resort — press Enter on the password field
+                # Strategy 3: Last resort — press Enter on the password field.
                 await page.press('#inputPassword', 'Enter')
     except PlaywrightTimeoutError:
-        # If clicks time out, try pressing Enter as a final fallback.
+        # If all click attempts time out, press Enter as a final fallback.
         await page.press('#inputPassword', 'Enter')
 
+    # Wait for the page to fully load after login.
     await page.wait_for_load_state('networkidle')
+    
+    # Confirm successful login by checking for the postings page.
     try:
         await page.wait_for_selector(
             await page.wait_for_selector("h1:has-text('postings')", 
             timeout=timeout_ms)
         )
     except PlaywrightTimeoutError as exc:
-        # Save debug artifacts before raising
+        # If login fails, save debug artifacts for troubleshooting.
         await page.screenshot(path="login_failed.png", full_page=True)
         await Actor.set_value("login_failed_screenshot.png", await page.screenshot(full_page=True))
         await Actor.set_value("login_failed_html.html", await page.content())
@@ -162,21 +166,29 @@ async def save_debug(context: BrowserContext) -> None:
 
 
 async def main() -> None:
+    # Initialize the Actor runtime.
     async with Actor:
+        # Load configuration and environment variables.
         config = await load_input()
 
+        # Retrieve credentials from environment variables.
         email = os.getenv('CL_EMAIL')
         password = os.getenv('CL_PASSWORD')
+        
+        # Initialize summary with default error status.
         summary = {'status': 'error', 'postings_found': 0, 'mode': config.mode}
 
+        # Validate that both email and password are provided; exit early if not.
         if not email or not password:
             message = 'Environment variables CL_EMAIL and CL_PASSWORD must be set.'
             Actor.log.error(message)
             await Actor.set_value('summary.json', {**summary, 'message': message})
             return
 
+        # Convert timeout from seconds to milliseconds for Playwright API.
         timeout_ms = config.timeout_sec * 1000
 
+        # Launch browser and create a new context and page.
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=config.headless)
             context = await browser.new_context()
@@ -184,20 +196,34 @@ async def main() -> None:
             context.set_default_timeout(timeout_ms)
             page = await context.new_page()
 
+            # Initialize postings list for extracted data.
             postings: List[str] = []
+            
+            # Main workflow with error handling.
             try:
+                # Log in to Craigslist with provided credentials.
                 await login_craigslist(page, email, password, timeout_ms)
+                
+                # Navigate to the manage postings page.
                 await load_postings(page, timeout_ms)
+                
+                # Extract all visible postings from the page.
                 postings = await extract_postings(page)
 
+                # Log and print each extracted posting.
                 for idx, posting in enumerate(postings, start=1):
                     Actor.log.info(f'Posting {idx}: {posting}')
                     print(f'Posting {idx}: {posting}')
 
+                # Update summary to success status with posting count.
                 summary = {'status': 'ok', 'postings_found': len(postings), 'mode': config.mode}
+            
+            # Handle any exceptions during the workflow.
             except Exception as exc:  # noqa: BLE001
                 Actor.log.exception('Phase 1 flow failed.')
                 summary = {**summary, 'message': str(exc), 'postings_found': len(postings)}
+            
+            # Always clean up: save debug artifacts, write summary, and close browser.
             finally:
                 await save_debug(context)
                 await Actor.set_value('summary.json', summary)
