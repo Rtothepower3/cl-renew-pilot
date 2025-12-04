@@ -30,7 +30,6 @@ class InputConfig:
     screenshots: str
     delays: Dict[str, int]
     timeout_sec: int
-    headless: bool
     manual_login: bool
 
 
