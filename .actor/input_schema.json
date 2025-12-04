@@ -71,6 +71,12 @@
       "default": 180,
       "description": "Abort the run after this many seconds."
     },
+    "manual_login": {
+      "title": "Manual login?",
+      "type": "boolean",
+      "description": "Enable this to open a visible browser for manual Craigslist login.",
+      "default": false
+    },
     "headless": {
       "title": "Run headless",
       "type": "boolean",
