@@ -53,7 +53,6 @@ async def load_input() -> InputConfig:
             'max': delays.get('max', 1200),
         },
         timeout_sec=actor_input.get('timeout_sec', 180),
-        headless=actor_input.get('headless', True),
         manual_login=actor_input.get('manual_login', False),
     )
 
