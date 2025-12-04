@@ -7,11 +7,10 @@ writes a summary to the key-value store.
 
 from __future__ import annotations
 
-import os
+import asyncio
 from dataclasses import dataclass
+from time import monotonic
 from typing import Dict, List
-
-import re
 
 from apify import Actor
 from playwright.async_api import (
@@ -32,6 +31,7 @@ class InputConfig:
     delays: Dict[str, int]
     timeout_sec: int
     headless: bool
+    manual_login: bool
 
 
 async def load_input() -> InputConfig:
@@ -55,99 +55,42 @@ async def load_input() -> InputConfig:
         },
         timeout_sec=actor_input.get('timeout_sec', 180),
         headless=actor_input.get('headless', True),
+        manual_login=actor_input.get('manual_login', False),
     )
 
 
-async def login_craigslist(page: Page, email: str, password: str, timeout_ms: int) -> None:
-    '''Log in to Craigslist using provided credentials.'''
-    await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=timeout_ms)
+async def save_cookies(context: BrowserContext) -> None:
+    """Persist cookies to the default key-value store."""
+    cookies = await context.cookies()
+    await Actor.set_value('craigslist_cookies.json', cookies, content_type='application/json')
 
-    await page.wait_for_selector('#inputEmailHandle', timeout=timeout_ms)
-    await page.fill('#inputEmailHandle', email)
-    await page.fill('#inputPassword', password)
 
-    Actor.log.info(f"Debug login email={email}, password_length={len(password)}")
+async def load_cookies(context: BrowserContext) -> bool:
+    """Load cookies from the default key-value store. Returns True if applied."""
+    stored = await Actor.get_value('craigslist_cookies.json')
+    if not stored:
+        return False
 
-    async def _capture_after_click() -> None:
-        """Store artifacts immediately after the login submission attempt."""
-        await Actor.set_value("after_click_html.html", await page.content())
-        await Actor.set_value("after_click_screenshot.png", await page.screenshot(full_page=True))
+    # Only cookies are restored; storage state is omitted unless we see a need for it.
+    await context.add_cookies(stored)
+    return True
 
+
+async def is_on_postings_page(page: Page) -> bool:
+    """Detect if the postings header is visible."""
     try:
-        login_by_name = page.get_by_role("button", name=re.compile(r"^\s*Log in\s*$", re.IGNORECASE))
-        name_count = await login_by_name.count()
-        if name_count >= 2:
-            await login_by_name.nth(1).click(timeout=timeout_ms)
-            await _capture_after_click()
-        elif name_count == 1:
-            await login_by_name.first.click(timeout=timeout_ms)
-            await _capture_after_click()
-        else:
-            fallback_selector = (
-                'form[action*="login"] button[type="submit"]:not([disabled]), '
-                'form[action*="login"] input[type="submit"]:not([disabled])'
-            )
-            submit_buttons = page.locator(fallback_selector)
-            submit_count = await submit_buttons.count()
-            if submit_count >= 2:
-                await submit_buttons.nth(1).click(timeout=timeout_ms)
-                await _capture_after_click()
-            elif submit_count == 1:
-                await submit_buttons.first.click(timeout=timeout_ms)
-                await _capture_after_click()
-            else:
-                # Last resort: press Enter on the password field to submit.
-                await page.press('#inputPassword', 'Enter')
-                await _capture_after_click()
+        return await page.locator("h2.account-tab-header:has-text('postings')").is_visible(timeout=2_000)
     except PlaywrightTimeoutError:
-        await page.press('#inputPassword', 'Enter')
-        await _capture_after_click()
+        return False
 
-    # Limit login wait to avoid hanging the whole run on challenges or bad creds.
-    await page.wait_for_load_state('networkidle')
-    login_check_timeout = min(timeout_ms, 60_000)
 
-    confirmation_selector = "h2.account-tab-header:has-text('postings')"
+async def detect_verification_banner(page: Page) -> bool:
+    """Best-effort detection for Craigslist verification banner."""
+    selector = "text=Further verification required"
     try:
-        await page.wait_for_selector(confirmation_selector, timeout=login_check_timeout)
-        return
-    except PlaywrightTimeoutError as exc:
-        async def _is_visible(selector: str) -> bool:
-            try:
-                return await page.locator(selector).first.is_visible(timeout=2_000)
-            except PlaywrightTimeoutError:
-                return False
-
-        current_url = page.url
-        page_title = await page.title()
-        login_form_visible = await _is_visible('#inputEmailHandle')
-        captcha_visible = await _is_visible('iframe[src*="captcha"], .g-recaptcha')
-        # error_visible checks generic warning/alert boxes (.warning, .alertbox) and account-level errors (.account-error).
-        # This will catch banner-style errors Craigslist sometimes shows after failed login, but will miss inline field hints
-        # or silent reloads with no visible error message if Craigslist uses other selectors for failures.
-        error_visible = await _is_visible('.warning, .alertbox, .account-error')
-
-        screenshot = await page.screenshot(full_page=True)
-        html_content = await page.content()
-
-        await Actor.set_value('login_failed_screenshot.png', screenshot, content_type='image/png')
-        await Actor.set_value('login_failed_html.html', html_content, content_type='text/html')
-        await Actor.set_value(
-            'login_failed_meta.json',
-            {
-                'url': current_url,
-                'title': page_title,
-                'login_form_visible': login_form_visible,
-                'captcha_visible': captcha_visible,
-                'error_visible': error_visible,
-            },
-            content_type='application/json',
-        )
-
-        raise RuntimeError(
-            f"Login confirmation failed. url={current_url} login_form_visible={login_form_visible} "
-            f"captcha_visible={captcha_visible} error_visible={error_visible}"
-        ) from exc
+        return await page.locator(selector).first.is_visible(timeout=2_000)
+    except PlaywrightTimeoutError:
+        return False
 
 
 async def load_postings(page: Page, timeout_ms: int) -> None:
@@ -209,65 +152,96 @@ async def save_debug(context: BrowserContext) -> None:
 async def main() -> None:
     # Initialize the Actor runtime.
     async with Actor:
-        # Test artefacts can be stored using Actor.set_value and retrieved later.
-        await Actor.set_value("debug_hello.txt", "hello from this run")
-        
-        # Load configuration and environment variables.
         config = await load_input()
-
-        # Retrieve credentials from environment variables.
-        email = os.getenv('CL_EMAIL')
-        password = os.getenv('CL_PASSWORD')
-        
-        # Initialize summary with default error status.
+        timeout_ms = config.timeout_sec * 1000
         summary = {'status': 'error', 'postings_found': 0, 'mode': config.mode}
 
-        # Validate that both email and password are provided; exit early if not.
-        if not email or not password:
-            message = 'Environment variables CL_EMAIL and CL_PASSWORD must be set.'
-            Actor.log.error(message)
-            await Actor.set_value('summary.json', {**summary, 'message': message})
-            return
-
-        # Convert timeout from seconds to milliseconds for Playwright API.
-        timeout_ms = config.timeout_sec * 1000
-
-        # Launch browser and create a new context and page.
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=config.headless)
+            headless_flag = not config.manual_login  # Manual login forces a visible browser.
+            browser = await playwright.chromium.launch(headless=headless_flag)
             context = await browser.new_context()
             context.set_default_navigation_timeout(timeout_ms)
             context.set_default_timeout(timeout_ms)
             page = await context.new_page()
 
-            # Initialize postings list for extracted data.
             postings: List[str] = []
-            
-            # Main workflow with error handling.
+
             try:
-                # Log in to Craigslist with provided credentials.
-                await login_craigslist(page, email, password, timeout_ms)
-                
-                # Navigate to the manage postings page.
+                if config.manual_login:
+                    Actor.log.info(
+                        "Manual login enabled. Open Live View, complete the Craigslist login within 3 minutes, "
+                        "and wait for the postings page to appear. Cookies will be saved automatically."
+                    )
+                    await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=timeout_ms)
+
+                    start = monotonic()
+                    poll_interval = 5
+                    while monotonic() - start < config.timeout_sec:
+                        if await is_on_postings_page(page):
+                            await save_cookies(context)
+                            summary = {
+                                'status': 'ok',
+                                'postings_found': 0,
+                                'mode': config.mode,
+                                'message': 'Manual login detected; cookies saved.',
+                            }
+                            Actor.log.info('Postings page detected; cookies saved. Exiting manual login mode.')
+                            break
+                        await asyncio.sleep(poll_interval)
+                    else:
+                        summary = {
+                            'status': 'error',
+                            'postings_found': 0,
+                            'mode': config.mode,
+                            'message': (
+                                'Manual login not detected before timeout. '
+                                'Please rerun with manual_login enabled and complete login via Live View.'
+                            ),
+                        }
+                    return
+
+                cookies_loaded = await load_cookies(context)
+                if not cookies_loaded:
+                    summary = {
+                        'status': 'error',
+                        'postings_found': 0,
+                        'mode': config.mode,
+                        'message': (
+                            'Craigslist session expired or verification required. '
+                            'Please rerun the Actor with manual_login enabled to refresh session cookies.'
+                        ),
+                    }
+                    return
+
+                await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=timeout_ms)
+
+                if not await is_on_postings_page(page):
+                    verification = await detect_verification_banner(page)
+                    summary = {
+                        'status': 'error',
+                        'postings_found': 0,
+                        'mode': config.mode,
+                        'message': (
+                            'Craigslist session expired or verification required. '
+                            'Please rerun the Actor with manual_login enabled to refresh session cookies.'
+                        ),
+                        'verification_banner': verification,
+                    }
+                    return
+
                 await load_postings(page, timeout_ms)
-                
-                # Extract all visible postings from the page.
                 postings = await extract_postings(page)
 
-                # Log and print each extracted posting.
                 for idx, posting in enumerate(postings, start=1):
                     Actor.log.info(f'Posting {idx}: {posting}')
                     print(f'Posting {idx}: {posting}')
 
-                # Update summary to success status with posting count.
                 summary = {'status': 'ok', 'postings_found': len(postings), 'mode': config.mode}
-            
-            # Handle any exceptions during the workflow.
+
             except Exception as exc:  # noqa: BLE001
                 Actor.log.exception('Phase 1 flow failed.')
                 summary = {**summary, 'message': str(exc), 'postings_found': len(postings)}
-            
-            # Always clean up: save debug artifacts, write summary, and close browser.
+
             finally:
                 await save_debug(context)
                 await Actor.set_value('summary.json', summary)
