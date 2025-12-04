@@ -76,6 +76,12 @@
       "type": "boolean",
       "description": "Enable this to open a visible browser for manual Craigslist login.",
       "default": false
+    },
+    "headless": {
+      "title": "Run headless",
+      "type": "boolean",
+      "default": true,
+      "description": "Set false to see the browser for debugging (ignored when manual_login is true)."
     }
   },
   "required": ["mode"]

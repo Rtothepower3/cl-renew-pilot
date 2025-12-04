@@ -30,6 +30,7 @@ class InputConfig:
     screenshots: str
     delays: Dict[str, int]
     timeout_sec: int
+    headless: bool
     manual_login: bool
 
 
@@ -53,6 +54,7 @@ async def load_input() -> InputConfig:
             'max': delays.get('max', 1200),
         },
         timeout_sec=actor_input.get('timeout_sec', 180),
+        headless=actor_input.get('headless', True),
         manual_login=actor_input.get('manual_login', False),
     )
 
@@ -155,7 +157,7 @@ async def main() -> None:
         summary = {'status': 'error', 'postings_found': 0, 'mode': config.mode}
 
         async with async_playwright() as playwright:
-            headless_flag = not config.manual_login  # Manual login forces a visible browser.
+            headless_flag = False if config.manual_login else config.headless
             browser = await playwright.chromium.launch(headless=headless_flag)
             context = await browser.new_context()
             context.set_default_navigation_timeout(timeout_ms)
