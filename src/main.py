@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import os
 from time import monotonic
 from typing import Dict, List
 
@@ -37,6 +38,9 @@ class InputConfig:
 async def load_input() -> InputConfig:
     """Load Actor input and apply defaults per .actor/input_schema.json."""
     actor_input = await Actor.get_input() or {}
+    # LOCAL_MANUAL_LOGIN_DEFAULT=true can be set when running locally
+    # to default manual_login to True without touching actor input.
+    local_manual_login_default = os.getenv('LOCAL_MANUAL_LOGIN_DEFAULT') == 'true'
 
     listing_filter = actor_input.get('listing_filter') or {}
     delays = actor_input.get('delays') or {}
@@ -55,7 +59,7 @@ async def load_input() -> InputConfig:
         },
         timeout_sec=actor_input.get('timeout_sec', 180),
         headless=actor_input.get('headless', True),
-        manual_login=actor_input.get('manual_login', False),
+        manual_login=actor_input.get('manual_login', local_manual_login_default),
     )
 
 
