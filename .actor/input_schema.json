@@ -14,23 +14,27 @@
       "title": "Listing filter",
       "type": "object",
       "description": "Restrict which rows to touch. Leave empty for all.",
+      "editor": "json",
       "properties": {
         "status_in": {
           "title": "Allowed status values",
           "type": "array",
           "items": { "type": "string" },
-          "default": ["expired", "redone", "removed", "deleted"]
+          "default": ["expired", "redone", "removed", "deleted"],
+          "description": "Only act on rows whose status matches one of these values."
         },
         "title_includes": {
           "title": "Title must include",
           "type": "array",
           "items": { "type": "string" },
-          "default": []
+          "default": [],
+          "description": "Limit to rows whose title contains any of these substrings (case-insensitive)."
         },
         "max_actions": {
           "title": "Max actions per run",
           "type": "integer",
-          "default": 5
+          "default": 5,
+          "description": "Stop after this many renew/repost actions (0 for unlimited)."
         }
       }
     },
@@ -44,20 +48,40 @@
     "delays": {
       "title": "Human-like delays (ms)",
       "type": "object",
+      "description": "Randomized sleep range to mimic human pacing between actions.",
+      "editor": "json",
       "properties": {
-        "min": { "type": "integer", "default": 300 },
-        "max": { "type": "integer", "default": 1200 }
+        "min": {
+          "title": "Minimum delay (ms)",
+          "type": "integer",
+          "default": 300,
+          "description": "Lower bound of randomized delay between actions (ms)."
+        },
+        "max": {
+          "title": "Maximum delay (ms)",
+          "type": "integer",
+          "default": 1200,
+          "description": "Upper bound of randomized delay between actions (ms)."
+        }
       }
     },
     "timeout_sec": {
       "title": "Run timeout (seconds)",
       "type": "integer",
-      "default": 180
+      "default": 180,
+      "description": "Abort the run after this many seconds."
+    },
+    "manual_login": {
+      "title": "Manual login?",
+      "type": "boolean",
+      "description": "Enable this to open a visible browser for manual Craigslist login.",
+      "default": false
     },
     "headless": {
       "title": "Run headless",
       "type": "boolean",
-      "default": true
+      "default": true,
+      "description": "Set false to see the browser for debugging (ignored when manual_login is true)."
     }
   },
   "required": ["mode"]

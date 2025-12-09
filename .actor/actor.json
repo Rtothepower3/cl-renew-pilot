@@ -7,7 +7,7 @@
     "buildTag": "latest",
     "meta": {
         "templateId": "python-playwright",
-        "generatedBy": "<FILL-IN-MODEL>"
+        "generatedBy": "gpt-5-codex"
     },
     "input": "./input_schema.json",
     "output": "./output_schema.json",
