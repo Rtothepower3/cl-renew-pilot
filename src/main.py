@@ -40,6 +40,13 @@ async def load_input() -> InputConfig:
     actor_input = await Actor.get_input() or {}
     # LOCAL_MANUAL_LOGIN_DEFAULT=true can be set when running locally
     # to default manual_login to True without touching actor input.
+    #
+    # In PowerShell:
+    #   $env:LOCAL_MANUAL_LOGIN_DEFAULT = "true"
+    #
+    # In Command Prompt:
+    #   set LOCAL_MANUAL_LOGIN_DEFAULT=true
+
     local_manual_login_default = os.getenv('LOCAL_MANUAL_LOGIN_DEFAULT') == 'true'
 
     listing_filter = actor_input.get('listing_filter') or {}
@@ -159,6 +166,7 @@ async def main() -> None:
         config = await load_input()
         timeout_ms = config.timeout_sec * 1000
         summary = {'status': 'error', 'postings_found': 0, 'mode': config.mode}
+        Actor.log.info(f"DEBUG: manual_login={config.manual_login}, headless={config.headless}")
 
         async with async_playwright() as playwright:
             headless_flag = False if config.manual_login else config.headless
