@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import os
+import random
 from time import monotonic
 from typing import Dict, List
 
@@ -138,6 +139,63 @@ async def extract_postings(page: Page) -> List[str]:
     return postings
 
 
+async def gather_repost_targets(page: Page, listing_filter: Dict[str, object]) -> List[Dict[str, object]]:
+    """Collect repostable rows with metadata."""
+    targets: List[Dict[str, object]] = []
+    rows = page.locator('table.account-table tr.posting-row, table tr.posting-row')
+    total = await rows.count()
+
+    title_filters = listing_filter.get('title_includes') or []
+    status_filters = listing_filter.get('status_in') or []
+
+    for idx in range(total):
+        row = rows.nth(idx)
+        if not await row.is_visible():
+            continue
+
+        repost_btn = row.locator('form.manage.repost input[type="submit"]')
+        if await repost_btn.count() == 0:
+            continue
+
+        title_text = ""
+        try:
+            title_text = (await row.locator('td.title').inner_text()).strip()
+        except Exception:
+            pass
+
+        status_text = ""
+        try:
+            status_text = (await row.locator('td.status').inner_text()).strip()
+        except Exception:
+            pass
+
+        posting_id = None
+        try:
+            posting_id = await row.locator('td.status').get_attribute('data-postingid')
+        except Exception:
+            posting_id = None
+
+        if title_filters:
+            lower_title = title_text.lower()
+            if not any(substr.lower() in lower_title for substr in title_filters):
+                continue
+
+        if status_filters and status_text:
+            if status_text.lower() not in [s.lower() for s in status_filters]:
+                continue
+
+        targets.append(
+            {
+                'locator': repost_btn.first,
+                'posting_id': posting_id,
+                'title': title_text,
+                'status': status_text,
+            }
+        )
+
+    return targets
+
+
 async def save_debug(context: BrowserContext) -> None:
     """Save a screenshot and HTML snapshot to the key-value store."""
     if not context.pages:
@@ -242,17 +300,91 @@ async def main() -> None:
                     return
 
                 await load_postings(page, timeout_ms)
-                postings = await extract_postings(page)
+                repost_targets = await gather_repost_targets(page, config.listing_filter)
+                initial_repost_found = len(repost_targets)
+                max_actions = config.listing_filter.get('max_actions', 5)
 
-                for idx, posting in enumerate(postings, start=1):
-                    Actor.log.info(f'Posting {idx}: {posting}')
-                    print(f'Posting {idx}: {posting}')
+                if config.mode not in ('dry-run', 'repost'):
+                    summary = {
+                        'status': 'error',
+                        'mode': config.mode,
+                        'repost_found': initial_repost_found,
+                        'repost_clicked': 0,
+                        'acted_on': [],
+                        'message': f"Unsupported mode '{config.mode}'. Use 'dry-run' or 'repost'.",
+                    }
+                    return
 
-                summary = {'status': 'ok', 'postings_found': len(postings), 'mode': config.mode}
+                if config.mode == 'dry-run':
+                    for tgt in repost_targets:
+                        Actor.log.info(
+                            f"[DRY RUN] Would repost posting_id={tgt.get('posting_id')} title='{tgt.get('title')}' status='{tgt.get('status')}'"
+                        )
+                    summary = {
+                        'status': 'ok',
+                        'mode': config.mode,
+                        'repost_found': initial_repost_found,
+                        'repost_clicked': 0,
+                        'acted_on': [],
+                        'message': 'Dry run completed.',
+                    }
+                    return
+
+                repost_clicked = 0
+                acted_on: List[Dict[str, object]] = []
+
+                while repost_clicked < max_actions:
+                    if not repost_targets:
+                        break
+
+                    tgt = repost_targets.pop(0)
+                    delay_ms = random.randint(config.delays['min'], config.delays['max'])
+                    await asyncio.sleep(delay_ms / 1000)
+
+                    try:
+                        Actor.log.info(
+                            f"Clicking repost for posting_id={tgt.get('posting_id')} title='{tgt.get('title')}' status='{tgt.get('status')}'"
+                        )
+                        await tgt['locator'].click(timeout=timeout_ms)
+                        repost_clicked += 1
+                        acted_on.append({'posting_id': tgt.get('posting_id'), 'title': tgt.get('title')})
+                    except Exception as exc:  # noqa: BLE001
+                        Actor.log.warning(f'Failed to click repost for posting_id={tgt.get("posting_id")}: {exc}')
+
+                    await asyncio.sleep(1)
+                    await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=timeout_ms)
+
+                    if not await is_on_postings_page(page):
+                        verification = await detect_verification_banner(page)
+                        summary = {
+                            'status': 'error',
+                            'mode': config.mode,
+                            'repost_found': initial_repost_found,
+                            'repost_clicked': repost_clicked,
+                            'acted_on': acted_on,
+                            'verification_banner': verification,
+                            'message': (
+                                'Lost authenticated session during repost. '
+                                'Please rerun with manual_login enabled to refresh session cookies.'
+                            ),
+                        }
+                        return
+
+                    await load_postings(page, timeout_ms)
+                    repost_targets = await gather_repost_targets(page, config.listing_filter)
+
+                summary = {
+                    'status': 'ok',
+                    'mode': config.mode,
+                    'repost_found': initial_repost_found,
+                    'repost_clicked': repost_clicked,
+                    'acted_on': acted_on,
+                    'message': f'Repost run completed. Clicked {repost_clicked} postings.',
+                }
 
             except Exception as exc:  # noqa: BLE001
                 Actor.log.exception('Phase 1 flow failed.')
-                summary = {**summary, 'message': str(exc), 'postings_found': len(postings)}
+                summary = {**summary, 'message': str(exc), 'repost_clicked': 0}
 
             finally:
                 await save_debug(context)
