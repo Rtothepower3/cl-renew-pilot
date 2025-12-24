@@ -131,6 +131,18 @@ async def load_postings(page: Page, timeout_ms: int) -> None:
     await page.wait_for_selector(table_selector, timeout=timeout_ms)
 
 
+async def is_posting_active(page: Page) -> bool:
+    """Check whether any posting row is marked as active on the postings page."""
+    locator = page.locator("tr.posting-row td.status:has-text('active')").first
+    try:
+        if await locator.is_visible(timeout=2_000):
+            Actor.log.info('Posting is active on the postings page; no further action needed.')
+            return True
+    except PlaywrightTimeoutError:
+        return False
+    return False
+
+
 async def extract_postings(page: Page) -> List[str]:
     """Extract visible posting rows as simple text lines."""
     rows_locator = page.locator('table.account-table tr, table tr')
