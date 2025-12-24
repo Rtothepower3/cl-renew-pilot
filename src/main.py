@@ -424,6 +424,10 @@ async def main() -> None:
                     if posting_id and posting_id in acted_ids:
                         continue
 
+                    if await is_posting_active(page):
+                        Actor.log.info('Active posting detected; skipping repost attempts.')
+                        break
+
                     delay_ms = random.randint(config.delays['min'], config.delays['max'])
                     await asyncio.sleep(delay_ms / 1000)
 
