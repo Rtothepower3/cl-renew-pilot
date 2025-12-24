@@ -247,6 +247,49 @@ async def save_debug(context: BrowserContext) -> None:
     )
 
 
+async def click_if_visible(page: Page, selector: str, label: str, timeout_ms: int) -> bool:
+    """Click the first visible element matching selector."""
+    locator = page.locator(selector).first
+    try:
+        if await locator.is_visible(timeout=3_000):
+            Actor.log.info(f'Clicking {label} button.')
+            await locator.click(timeout=timeout_ms)
+            await page.wait_for_load_state('domcontentloaded', timeout=timeout_ms)
+            return True
+    except PlaywrightTimeoutError:
+        return False
+    except Exception as exc:  # noqa: BLE001
+        Actor.log.warning(f'Failed to click {label}: {exc}')
+    return False
+
+
+async def handle_repost_publish_flow(page: Page, timeout_ms: int) -> Dict[str, bool]:
+    """Handle repost continuation and publish steps after clicking repost."""
+    result = {'continue_clicked': False, 'publish_clicked': False}
+    await page.wait_for_load_state('domcontentloaded', timeout=timeout_ms)
+
+    continue_selector = (
+        "input[type='submit' i][value*='continue' i], "
+        "button:has-text('continue'), "
+        "input[type='button' i][value*='continue' i]"
+    )
+    publish_selector = (
+        "input[type='submit' i][value*='publish' i], "
+        "button:has-text('publish'), "
+        "input[type='button' i][value*='publish' i]"
+    )
+
+    if await click_if_visible(page, continue_selector, 'continue', timeout_ms):
+        result['continue_clicked'] = True
+
+    if await click_if_visible(page, publish_selector, 'publish', timeout_ms):
+        result['publish_clicked'] = True
+    elif result['continue_clicked']:
+        Actor.log.warning('Publish button not found after continue step.')
+
+    return result
+
+
 async def main() -> None:
     # Initialize the Actor runtime.
     async with Actor:
@@ -369,22 +412,38 @@ async def main() -> None:
 
                 repost_clicked = 0
                 acted_on: List[Dict[str, object]] = []
+                acted_ids: set[str] = set()
 
                 while repost_clicked < max_actions:
                     if not repost_targets:
                         break
 
                     tgt = repost_targets.pop(0)
+                    posting_id = tgt.get('posting_id')
+                    posting_title = tgt.get('title') or ''
+                    if posting_id and posting_id in acted_ids:
+                        continue
+
                     delay_ms = random.randint(config.delays['min'], config.delays['max'])
                     await asyncio.sleep(delay_ms / 1000)
 
                     try:
                         Actor.log.info(
-                            f"Clicking repost for posting_id={tgt.get('posting_id')} title='{tgt.get('title')}' status='{tgt.get('status')}'"
+                            f"Clicking repost for posting_id={posting_id} title='{posting_title}' status='{tgt.get('status')}'"
                         )
                         await tgt['locator'].click(timeout=timeout_ms)
+                        Actor.log.info('Waiting for repost flow to load.')
+                        flow_result = await handle_repost_publish_flow(page, timeout_ms)
                         repost_clicked += 1
-                        acted_on.append({'posting_id': tgt.get('posting_id'), 'title': tgt.get('title')})
+                        if posting_id:
+                            acted_ids.add(posting_id)
+                        acted_on.append(
+                            {
+                                'posting_id': posting_id,
+                                'title': posting_title,
+                                **flow_result,
+                            }
+                        )
                     except Exception as exc:  # noqa: BLE001
                         Actor.log.warning(f'Failed to click repost for posting_id={tgt.get("posting_id")}: {exc}')
 
@@ -408,6 +467,8 @@ async def main() -> None:
                         return
 
                     await load_postings(page, timeout_ms)
+                    if await is_posting_active(page):
+                        break
                     repost_targets = await gather_repost_targets(page, config.listing_filter)
 
                 summary = {
