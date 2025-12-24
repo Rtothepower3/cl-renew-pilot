@@ -1,0 +1,6 @@
+{
+  "mode": "repost",
+  "manual_login": false,
+  "headless": true,
+  "timeout_sec": 180
+}
