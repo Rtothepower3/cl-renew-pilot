@@ -54,9 +54,12 @@ async def load_input() -> InputConfig:
     #
     # In PowerShell:
     #   $env:LOCAL_MANUAL_LOGIN_DEFAULT = "true"
+    #   then apify run
+    #   
+    #   wait for cookies to save
     #
-    # In Command Prompt:
-    #   set LOCAL_MANUAL_LOGIN_DEFAULT=true
+    #   $env:LOCAL_MANUAL_LOGIN_DEFAULT = "false"
+    #   then apify run --no-purge
 
     local_manual_login_default = os.getenv('LOCAL_MANUAL_LOGIN_DEFAULT') == 'true'
 
