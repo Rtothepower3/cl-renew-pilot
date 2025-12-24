@@ -64,7 +64,7 @@ async def load_input() -> InputConfig:
     delays = actor_input.get('delays') or {}
 
     return InputConfig(
-        mode=actor_input.get('mode', 'dry-run'),
+        mode=actor_input.get('mode', 'repost'),
         listing_filter={
             'status_in': listing_filter.get('status_in', ['expired', 'redone', 'removed', 'deleted']),
             'title_includes': listing_filter.get('title_includes', []),
