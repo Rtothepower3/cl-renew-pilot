@@ -81,6 +81,10 @@ async def load_cookies(context: BrowserContext) -> bool:
     """Load cookies from the default key-value store. Returns True if applied."""
     stored = await Actor.get_value('craigslist_cookies.json')
     if not stored:
+        Actor.log.warning(
+            "No cookies found in key-value store (craigslist_cookies.json). "
+            "If you just completed manual login locally, ensure storage was not purged."
+        )
         return False
 
     # Only cookies are restored; storage state is omitted unless we see a need for it.
@@ -225,6 +229,11 @@ async def main() -> None:
         timeout_ms = config.timeout_sec * 1000
         summary = {'status': 'error', 'postings_found': 0, 'mode': config.mode}
         Actor.log.info(f"DEBUG: manual_login={config.manual_login}, headless={config.headless}")
+        purge_on_start = os.getenv('APIFY_PURGE_ON_START', '').lower()
+        if purge_on_start in ('1', 'true', 'yes'):
+            Actor.log.warning(
+                'APIFY_PURGE_ON_START is enabled; local storage will be cleared before this run.'
+            )
 
         async with async_playwright() as playwright:
             headless_flag = False if config.manual_login else config.headless
