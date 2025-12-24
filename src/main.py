@@ -38,7 +38,16 @@ class InputConfig:
 
 async def load_input() -> InputConfig:
     """Load Actor input and apply defaults per .actor/input_schema.json."""
-    actor_input = await Actor.get_input() or {}
+    actor_input = await Actor.get_input()
+    if actor_input is None:
+        Actor.log.warning(
+            "No input found under the default key. Trying fallback key INPUT.json."
+        )
+        actor_input = await Actor.get_value('INPUT.json')
+
+    if actor_input is None:
+        actor_input = {}
+
     Actor.log.info(f"DEBUG: raw_input={actor_input}")
     # LOCAL_MANUAL_LOGIN_DEFAULT=true can be set when running locally
     # to default manual_login to True without touching actor input.
