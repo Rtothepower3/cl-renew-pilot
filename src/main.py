@@ -239,10 +239,13 @@ async def main() -> None:
         timeout_ms = config.timeout_sec * 1000
         summary = {'status': 'error', 'postings_found': 0, 'mode': config.mode}
         Actor.log.info(f"DEBUG: manual_login={config.manual_login}, headless={config.headless}")
-        purge_on_start = os.getenv('APIFY_PURGE_ON_START', '').lower()
-        if purge_on_start in ('1', 'true', 'yes'):
-            Actor.log.warning(
-                'APIFY_PURGE_ON_START is enabled; local storage will be cleared before this run.'
+        if config.manual_login:
+            Actor.log.info(
+                "Manual login run: use `apify run --purge` to avoid stale cookies."
+            )
+        else:
+            Actor.log.info(
+                "Headless run: use `apify run --no-purge` to keep cookies."
             )
 
         async with async_playwright() as playwright:
