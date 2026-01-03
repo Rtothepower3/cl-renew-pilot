@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import os
+import random
 from time import monotonic
 from typing import Dict, List
 
@@ -37,15 +38,28 @@ class InputConfig:
 
 async def load_input() -> InputConfig:
     """Load Actor input and apply defaults per .actor/input_schema.json."""
-    actor_input = await Actor.get_input() or {}
+    actor_input = await Actor.get_input()
+    if actor_input is None:
+        Actor.log.warning(
+            "No input found under the default key. Trying fallback key INPUT.json."
+        )
+        actor_input = await Actor.get_value('INPUT.json')
+
+    if actor_input is None:
+        actor_input = {}
+
+    Actor.log.info(f"DEBUG: raw_input={actor_input}")
     # LOCAL_MANUAL_LOGIN_DEFAULT=true can be set when running locally
     # to default manual_login to True without touching actor input.
     #
     # In PowerShell:
     #   $env:LOCAL_MANUAL_LOGIN_DEFAULT = "true"
+    #   then apify run
+    #   
+    #   wait for cookies to save
     #
-    # In Command Prompt:
-    #   set LOCAL_MANUAL_LOGIN_DEFAULT=true
+    #   $env:LOCAL_MANUAL_LOGIN_DEFAULT = "false"
+    #   then apify run --no-purge
 
     local_manual_login_default = os.getenv('LOCAL_MANUAL_LOGIN_DEFAULT') == 'true'
 
@@ -53,7 +67,7 @@ async def load_input() -> InputConfig:
     delays = actor_input.get('delays') or {}
 
     return InputConfig(
-        mode=actor_input.get('mode', 'dry-run'),
+        mode=actor_input.get('mode', 'repost'),
         listing_filter={
             'status_in': listing_filter.get('status_in', ['expired', 'redone', 'removed', 'deleted']),
             'title_includes': listing_filter.get('title_includes', []),
@@ -80,6 +94,10 @@ async def load_cookies(context: BrowserContext) -> bool:
     """Load cookies from the default key-value store. Returns True if applied."""
     stored = await Actor.get_value('craigslist_cookies.json')
     if not stored:
+        Actor.log.warning(
+            "No cookies found in key-value store (craigslist_cookies.json). "
+            "If you just completed manual login locally, ensure storage was not purged."
+        )
         return False
 
     # Only cookies are restored; storage state is omitted unless we see a need for it.
@@ -113,6 +131,18 @@ async def load_postings(page: Page, timeout_ms: int) -> None:
     await page.wait_for_selector(table_selector, timeout=timeout_ms)
 
 
+async def is_posting_active(page: Page) -> bool:
+    """Check whether any posting row is marked as active on the postings page."""
+    locator = page.locator("tr.posting-row td.status:has-text('active')").first
+    try:
+        if await locator.is_visible(timeout=2_000):
+            Actor.log.info('Posting is active on the postings page; no further action needed.')
+            return True
+    except PlaywrightTimeoutError:
+        return False
+    return False
+
+
 async def extract_postings(page: Page) -> List[str]:
     """Extract visible posting rows as simple text lines."""
     rows_locator = page.locator('table.account-table tr, table tr')
@@ -138,6 +168,63 @@ async def extract_postings(page: Page) -> List[str]:
     return postings
 
 
+async def gather_repost_targets(page: Page, listing_filter: Dict[str, object]) -> List[Dict[str, object]]:
+    """Collect repostable rows with metadata."""
+    targets: List[Dict[str, object]] = []
+    rows = page.locator('table.account-table tr.posting-row, table tr.posting-row')
+    total = await rows.count()
+
+    title_filters = listing_filter.get('title_includes') or []
+    status_filters = listing_filter.get('status_in') or []
+
+    for idx in range(total):
+        row = rows.nth(idx)
+        if not await row.is_visible():
+            continue
+
+        repost_btn = row.locator('form.manage.repost input[type="submit"]')
+        if await repost_btn.count() == 0:
+            continue
+
+        title_text = ""
+        try:
+            title_text = (await row.locator('td.title').inner_text()).strip()
+        except Exception:
+            pass
+
+        status_text = ""
+        try:
+            status_text = (await row.locator('td.status').inner_text()).strip()
+        except Exception:
+            pass
+
+        posting_id = None
+        try:
+            posting_id = await row.locator('td.status').get_attribute('data-postingid')
+        except Exception:
+            posting_id = None
+
+        if title_filters:
+            lower_title = title_text.lower()
+            if not any(substr.lower() in lower_title for substr in title_filters):
+                continue
+
+        if status_filters and status_text:
+            if status_text.lower() not in [s.lower() for s in status_filters]:
+                continue
+
+        targets.append(
+            {
+                'locator': repost_btn.first,
+                'posting_id': posting_id,
+                'title': title_text,
+                'status': status_text,
+            }
+        )
+
+    return targets
+
+
 async def save_debug(context: BrowserContext) -> None:
     """Save a screenshot and HTML snapshot to the key-value store."""
     if not context.pages:
@@ -160,6 +247,49 @@ async def save_debug(context: BrowserContext) -> None:
     )
 
 
+async def click_if_visible(page: Page, selector: str, label: str, timeout_ms: int) -> bool:
+    """Click the first visible element matching selector."""
+    locator = page.locator(selector).first
+    try:
+        if await locator.is_visible(timeout=3_000):
+            Actor.log.info(f'Clicking {label} button.')
+            await locator.click(timeout=timeout_ms)
+            await page.wait_for_load_state('domcontentloaded', timeout=timeout_ms)
+            return True
+    except PlaywrightTimeoutError:
+        return False
+    except Exception as exc:  # noqa: BLE001
+        Actor.log.warning(f'Failed to click {label}: {exc}')
+    return False
+
+
+async def handle_repost_publish_flow(page: Page, timeout_ms: int) -> Dict[str, bool]:
+    """Handle repost continuation and publish steps after clicking repost."""
+    result = {'continue_clicked': False, 'publish_clicked': False}
+    await page.wait_for_load_state('domcontentloaded', timeout=timeout_ms)
+
+    continue_selector = (
+        "input[type='submit' i][value*='continue' i], "
+        "button:has-text('continue'), "
+        "input[type='button' i][value*='continue' i]"
+    )
+    publish_selector = (
+        "input[type='submit' i][value*='publish' i], "
+        "button:has-text('publish'), "
+        "input[type='button' i][value*='publish' i]"
+    )
+
+    if await click_if_visible(page, continue_selector, 'continue', timeout_ms):
+        result['continue_clicked'] = True
+
+    if await click_if_visible(page, publish_selector, 'publish', timeout_ms):
+        result['publish_clicked'] = True
+    elif result['continue_clicked']:
+        Actor.log.warning('Publish button not found after continue step.')
+
+    return result
+
+
 async def main() -> None:
     # Initialize the Actor runtime.
     async with Actor:
@@ -167,6 +297,14 @@ async def main() -> None:
         timeout_ms = config.timeout_sec * 1000
         summary = {'status': 'error', 'postings_found': 0, 'mode': config.mode}
         Actor.log.info(f"DEBUG: manual_login={config.manual_login}, headless={config.headless}")
+        if config.manual_login:
+            Actor.log.info(
+                "Manual login run: use `apify run --purge` to avoid stale cookies."
+            )
+        else:
+            Actor.log.info(
+                "Headless run: use `apify run --no-purge` to keep cookies."
+            )
 
         async with async_playwright() as playwright:
             headless_flag = False if config.manual_login else config.headless
@@ -242,17 +380,113 @@ async def main() -> None:
                     return
 
                 await load_postings(page, timeout_ms)
-                postings = await extract_postings(page)
+                repost_targets = await gather_repost_targets(page, config.listing_filter)
+                initial_repost_found = len(repost_targets)
+                max_actions = config.listing_filter.get('max_actions', 5)
 
-                for idx, posting in enumerate(postings, start=1):
-                    Actor.log.info(f'Posting {idx}: {posting}')
-                    print(f'Posting {idx}: {posting}')
+                if config.mode not in ('dry-run', 'repost'):
+                    summary = {
+                        'status': 'error',
+                        'mode': config.mode,
+                        'repost_found': initial_repost_found,
+                        'repost_clicked': 0,
+                        'acted_on': [],
+                        'message': f"Unsupported mode '{config.mode}'. Use 'dry-run' or 'repost'.",
+                    }
+                    return
 
-                summary = {'status': 'ok', 'postings_found': len(postings), 'mode': config.mode}
+                if config.mode == 'dry-run':
+                    for tgt in repost_targets:
+                        Actor.log.info(
+                            f"[DRY RUN] Would repost posting_id={tgt.get('posting_id')} title='{tgt.get('title')}' status='{tgt.get('status')}'"
+                        )
+                    summary = {
+                        'status': 'ok',
+                        'mode': config.mode,
+                        'repost_found': initial_repost_found,
+                        'repost_clicked': 0,
+                        'acted_on': [],
+                        'message': 'Dry run completed.',
+                    }
+                    return
+
+                repost_clicked = 0
+                acted_on: List[Dict[str, object]] = []
+                acted_ids: set[str] = set()
+
+                while repost_clicked < max_actions:
+                    if not repost_targets:
+                        break
+
+                    tgt = repost_targets.pop(0)
+                    posting_id = tgt.get('posting_id')
+                    posting_title = tgt.get('title') or ''
+                    if posting_id and posting_id in acted_ids:
+                        continue
+
+                    if await is_posting_active(page):
+                        Actor.log.info('Active posting detected; skipping repost attempts.')
+                        break
+
+                    delay_ms = random.randint(config.delays['min'], config.delays['max'])
+                    await asyncio.sleep(delay_ms / 1000)
+
+                    try:
+                        Actor.log.info(
+                            f"Clicking repost for posting_id={posting_id} title='{posting_title}' status='{tgt.get('status')}'"
+                        )
+                        await tgt['locator'].click(timeout=timeout_ms)
+                        Actor.log.info('Waiting for repost flow to load.')
+                        flow_result = await handle_repost_publish_flow(page, timeout_ms)
+                        repost_clicked += 1
+                        if posting_id:
+                            acted_ids.add(posting_id)
+                        acted_on.append(
+                            {
+                                'posting_id': posting_id,
+                                'title': posting_title,
+                                **flow_result,
+                            }
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        Actor.log.warning(f'Failed to click repost for posting_id={tgt.get("posting_id")}: {exc}')
+
+                    await asyncio.sleep(1)
+                    await page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=timeout_ms)
+
+                    if not await is_on_postings_page(page):
+                        verification = await detect_verification_banner(page)
+                        summary = {
+                            'status': 'error',
+                            'mode': config.mode,
+                            'repost_found': initial_repost_found,
+                            'repost_clicked': repost_clicked,
+                            'acted_on': acted_on,
+                            'verification_banner': verification,
+                            'message': (
+                                'Lost authenticated session during repost. '
+                                'Please rerun with manual_login enabled to refresh session cookies.'
+                            ),
+                        }
+                        return
+
+                    await load_postings(page, timeout_ms)
+                    if await is_posting_active(page):
+                        break
+                    repost_targets = await gather_repost_targets(page, config.listing_filter)
+
+                summary = {
+                    'status': 'ok',
+                    'mode': config.mode,
+                    'repost_found': initial_repost_found,
+                    'repost_clicked': repost_clicked,
+                    'acted_on': acted_on,
+                    'message': f'Repost run completed. Clicked {repost_clicked} postings.',
+                }
 
             except Exception as exc:  # noqa: BLE001
                 Actor.log.exception('Phase 1 flow failed.')
-                summary = {**summary, 'message': str(exc), 'postings_found': len(postings)}
+                summary = {**summary, 'message': str(exc), 'repost_clicked': 0}
 
             finally:
                 await save_debug(context)

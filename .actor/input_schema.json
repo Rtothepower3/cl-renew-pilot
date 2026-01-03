@@ -7,7 +7,7 @@
       "title": "Action mode",
       "type": "string",
       "enum": ["renew", "repost", "dry-run"],
-      "default": "dry-run",
+      "default": "repost",
       "description": "Use 'renew' in production. 'repost' for your dummy listings. 'dry-run' clicks nothing."
     },
     "listing_filter": {

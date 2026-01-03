@@ -1,0 +1,6 @@
+{
+  "mode": "dry-run",
+  "manual_login": true,
+  "headless": false,
+  "timeout_sec": 180
+}
